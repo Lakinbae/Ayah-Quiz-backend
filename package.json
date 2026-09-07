@@ -1,6 +1,6 @@
 {
   "name": "ayah-quiz-backend",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Ayah Quiz Telegram Mini App backend",
   "main": "server.js",
