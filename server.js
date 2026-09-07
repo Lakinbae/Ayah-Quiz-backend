@@ -7,14 +7,14 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8697781801:AAGWm2W3YUlu_aMGCCVAB7X7dqVwVR4TzYM';
 const bot = new Telegraf(BOT_TOKEN);
 
 // REPLACE THIS with your actual numeric Telegram User ID (e.g. get it from @userinfobot)
-const ADMIN_TELEGRAM_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 123456789;
+const ADMIN_TELEGRAM_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 6545688842;
 
 // Web App URL where your frontend is hosted
-const WEB_APP_URL = process.env.WEB_APP_URL || 'https://your-vercel-deployment-link.vercel.app';
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://quran-ayah-quiz.vercel.app';
 
 // Simple in-memory database mapping (In production, replace with MongoDB or PostgreSQL)
 const userDatabase = {
