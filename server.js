@@ -116,3 +116,32 @@ bot.launch().then(() => {
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// Add this to your Render backend code (Node.js / Express)
+app.get('/api/create-invoice/:userId', async (req, res) => {
+    const userId = req.params.userId;
+    const BOT_TOKEN = process.env.BOT_TOKEN; // Your Telegram Bot Token from @BotFather
+
+    try {
+        // Call Telegram Bot API to create an invoice link for 10 Stars
+        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: 'Ayah Quiz Pro',
+                description: 'Unlock Pro features, Juz filters, and recitation audio.',
+                payload: `pro_upgrade_${userId}`,
+                currency: 'XTR', // XTR is the currency code for Telegram Stars
+                prices: [{ label: 'Pro Access', amount: 10 }] // 10 Stars
+            })
+        });
+
+        const data = await response.json();
+        if (data.ok) {
+            res.json({ invoiceLink: data.result });
+        } else {
+            res.status(400).json({ error: data.description });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
