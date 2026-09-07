@@ -230,7 +230,9 @@ app.post('/api/pro/telebirr', authMiddleware, async (req, res) => {
       ADMIN_TELEGRAM_ID,
       [
         '🧾 <b>New Ayah Quiz Pro — Telebirr request</b>',
-        `Username: ${account.username ? '@' + escapeTelegram(account.username) : '⚠️ No Telegram @username set'}`,
+        account.username
+          ? `Username: <b>@${escapeTelegram(account.username)}</b>`
+          : `Account: <a href="tg://user?id=${id}">${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Telegram user')}</a>\nUsername: <i>not set</i>`,
         `Display name: ${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Unknown')}`,
         `Telegram ID: <code>${id}</code>`,
         `Amount: <b>${TELEBIRR_ETB} ETB</b>`,
@@ -312,6 +314,28 @@ bot.on('message', async (ctx) => {
     paidAt:new Date().toISOString()
   };
   saveUsers();
+
+  // Notify the admin about every successful Stars subscriber. If the user
+  // has no public @username, send a clickable Telegram account instead.
+  try {
+    const payerName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || 'Telegram user';
+    const payerIdentity = ctx.from.username
+      ? `Username: <b>@${escapeTelegram(ctx.from.username)}</b>`
+      : `Account: <a href="tg://user?id=${ctx.from.id}">${escapeTelegram(payerName)}</a>\nUsername: <i>not set</i>`;
+    await ctx.telegram.sendMessage(
+      ADMIN_TELEGRAM_ID,
+      [
+        '⭐ <b>New Ayah Quiz Pro — Telegram Stars</b>',
+        payerIdentity,
+        `Telegram ID: <code>${ctx.from.id}</code>`,
+        `Amount: <b>${PRO_STARS} Stars</b>`,
+        `Charge ID: <code>${escapeTelegram(payment.telegram_payment_charge_id || '')}</code>`
+      ].join('\n'),
+      {parse_mode:'HTML'}
+    );
+  } catch (err) {
+    console.error('Stars admin notification failed:', err);
+  }
 
   await ctx.reply(
     '🎉 <b>Ayah Quiz Pro activated!</b>\\n\\nYour Pro features are now unlocked. Open the Mini App again to refresh your account.',
