@@ -1,10 +1,12 @@
 {
   "name": "ayah-quiz-backend",
   "version": "2.0.0",
-  "description": "Secure Telegram Mini App backend for Ayah Quiz",
+  "private": true,
+  "description": "Ayah Quiz Telegram Mini App backend",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "engines": {
     "node": ">=18"

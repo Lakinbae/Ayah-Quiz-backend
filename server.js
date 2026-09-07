@@ -1,961 +1,1504 @@
-"use strict";
+const express = require('express');
+const cors = require('cors');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { Telegraf } = require('telegraf');
 
-const { Telegraf, Markup } = require("telegraf");
-const express = require("express");
-const cors = require("cors");
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
-
-
-/* =========================================================
-   CONFIG
-   ========================================================= */
+const PORT = Number(process.env.PORT || 3000);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const ADMIN_TELEGRAM_ID = String(
+  process.env.ADMIN_TELEGRAM_ID || '6545688842'
+);
 
-if (!BOT_TOKEN) {
-    console.error("ERROR: BOT_TOKEN environment variable is missing.");
-    process.exit(1);
-}
+const FRONTEND_URL =
+  process.env.FRONTEND_URL ||
+  'https://quran-ayah-quiz.vercel.app';
 
-const ADMIN_TELEGRAM_ID =
-    Number(process.env.ADMIN_ID || "6545688842");
+const SUPPORT_USERNAME =
+  process.env.SUPPORT_USERNAME || '@luck_7n';
 
-const WEB_APP_URL =
-    process.env.WEB_APP_URL ||
-    "https://quran-ayah-quiz.vercel.app";
+const TELEBIRR_NUMBER =
+  process.env.TELEBIRR_NUMBER || '0938054751';
 
-const PORT =
-    Number(process.env.PORT || 3000);
+const TELEBIRR_NAME =
+  process.env.TELEBIRR_NAME || 'Lakin Awel';
 
 const PRO_STARS = 10;
+const TELEBIRR_ETB = 25;
+
+// Telegram Mini App initData is only accepted for 24 hours.
+const INITDATA_MAX_AGE_SECONDS = 24 * 60 * 60;
 
 
-/* =========================================================
-   EXPRESS
-   ========================================================= */
+// ============================================================
+// BASIC CONFIGURATION
+// ============================================================
+
+if (!BOT_TOKEN) {
+  console.error(
+    'ERROR: BOT_TOKEN environment variable is missing.'
+  );
+
+  process.exit(1);
+}
+
 
 const app = express();
 
-app.use(cors({
-    origin: true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"]
-}));
+app.set('trust proxy', 1);
 
-app.use(express.json({
-    limit: "1mb"
-}));
+app.use(
+  express.json({
+    limit: '100kb'
+  })
+);
 
 
-/* =========================================================
-   BOT
-   ========================================================= */
+// ============================================================
+// CORS
+// ============================================================
 
-const bot = new Telegraf(BOT_TOKEN);
+app.use(
+  cors({
+    origin(origin, callback) {
+
+      // Allow requests without an Origin header.
+      // Useful for some Telegram/WebView requests.
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      const allowedOrigins = [
+        FRONTEND_URL,
+        'https://quran-ayah-quiz.vercel.app'
+      ];
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error('CORS origin not allowed')
+      );
+    }
+  })
+);
 
 
-/* =========================================================
-   SIMPLE PERSISTENT DATABASE
-   =========================================================
+// ============================================================
+// SIMPLE FILE DATABASE
+// ============================================================
 
-   IMPORTANT:
-   This prevents normal process restarts from deleting users.
+const DATA_DIR = path.join(__dirname, 'data');
 
-   On Render's ephemeral filesystem, a redeploy/rebuild can
-   still reset this file. For a serious production launch,
-   move this database to PostgreSQL/Supabase/MongoDB.
-   ========================================================= */
+const USERS_FILE = path.join(
+  DATA_DIR,
+  'users.json'
+);
 
-const DATA_DIR =
-    process.env.DATA_DIR ||
-    path.join(__dirname, "data");
 
-const DB_FILE =
-    path.join(DATA_DIR, "users.json");
+function ensureDataFile() {
 
-if (!fs.existsSync(DATA_DIR)) {
+  if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, {
-        recursive: true
+      recursive: true
     });
+  }
+
+  if (!fs.existsSync(USERS_FILE)) {
+    fs.writeFileSync(
+      USERS_FILE,
+      '{}',
+      'utf8'
+    );
+  }
 }
 
-let userDatabase = {};
+
+ensureDataFile();
+
+
+let users = {};
+
 
 try {
 
-    if (fs.existsSync(DB_FILE)) {
-        const raw =
-            fs.readFileSync(DB_FILE, "utf8");
+  users = JSON.parse(
+    fs.readFileSync(
+      USERS_FILE,
+      'utf8'
+    )
+  );
 
-        userDatabase =
-            raw ? JSON.parse(raw) : {};
-    }
+  if (!users || typeof users !== 'object') {
+    users = {};
+  }
 
 } catch (error) {
 
-    console.error(
-        "Could not load users database:",
-        error
+  console.error(
+    'Could not read users.json:',
+    error
+  );
+
+  users = {};
+}
+
+
+// ============================================================
+// SAVE DATABASE
+// ============================================================
+
+function saveUsers() {
+
+  try {
+
+    const temporaryFile =
+      USERS_FILE + '.tmp';
+
+    fs.writeFileSync(
+      temporaryFile,
+      JSON.stringify(users, null, 2),
+      'utf8'
     );
 
-    userDatabase = {};
+    fs.renameSync(
+      temporaryFile,
+      USERS_FILE
+    );
+
+  } catch (error) {
+
+    console.error(
+      'Could not save users:',
+      error
+    );
+  }
 }
 
 
-function saveDatabase() {
+// ============================================================
+// GET / CREATE USER
+// ============================================================
 
-    try {
+function getUser(id, extra = {}) {
 
-        fs.writeFileSync(
-            DB_FILE,
-            JSON.stringify(userDatabase, null, 2),
-            "utf8"
-        );
+  const key = String(id);
 
-    } catch (error) {
+  if (!users[key]) {
 
-        console.error(
-            "Could not save database:",
-            error
-        );
-    }
+    users[key] = {
+      id: key,
+
+      isPro: false,
+
+      createdAt:
+        new Date().toISOString(),
+
+      ...extra
+    };
+
+  } else {
+
+    users[key] = {
+      ...users[key],
+      ...extra
+    };
+  }
+
+
+  // Admin is ALWAYS Pro.
+  if (key === ADMIN_TELEGRAM_ID) {
+    users[key].isPro = true;
+  }
+
+
+  return users[key];
 }
 
 
-function ensureUser(userId, user = {}) {
+// ============================================================
+// TELEGRAM MINI APP initData VALIDATION
+// ============================================================
 
-    const id = String(userId);
+/*
+  Telegram Web App authentication works by validating
+  the initData sent by Telegram.
 
-    if (!userDatabase[id]) {
+  We NEVER trust a user ID sent separately by the frontend.
 
-        userDatabase[id] = {
-            telegramId: Number(userId),
-            name: user.first_name || "",
-            username: user.username || "",
-            isPro: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            payments: []
-        };
+  Instead:
 
-    } else {
+  1. Receive initData.
+  2. Verify Telegram's hash.
+  3. Extract the Telegram user.
+  4. Use that verified ID on the server.
+*/
 
-        userDatabase[id].name =
-            user.first_name ||
-            userDatabase[id].name ||
-            "";
 
-        userDatabase[id].username =
-            user.username ||
-            userDatabase[id].username ||
-            "";
+function validateInitData(initData) {
 
-        userDatabase[id].updatedAt =
-            new Date().toISOString();
-    }
+  if (
+    !initData ||
+    typeof initData !== 'string'
+  ) {
+    throw new Error(
+      'Telegram initData is required'
+    );
+  }
 
-    return userDatabase[id];
+
+  const params =
+    new URLSearchParams(initData);
+
+
+  const receivedHash =
+    params.get('hash');
+
+
+  if (!receivedHash) {
+
+    throw new Error(
+      'Telegram hash is missing'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Check auth_date
+  // ----------------------------------------------------------
+
+  const authDate =
+    Number(
+      params.get('auth_date') || 0
+    );
+
+
+  if (!authDate) {
+
+    throw new Error(
+      'Telegram auth_date is missing'
+    );
+  }
+
+
+  const now =
+    Math.floor(Date.now() / 1000);
+
+
+  if (
+    now - authDate >
+    INITDATA_MAX_AGE_SECONDS
+  ) {
+
+    throw new Error(
+      'Telegram session expired. Reopen the Mini App.'
+    );
+  }
+
+
+  if (authDate > now + 60) {
+
+    throw new Error(
+      'Invalid Telegram auth date'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Build data-check-string
+  // ----------------------------------------------------------
+
+  params.delete('hash');
+
+
+  const pairs = [];
+
+
+  for (const [key, value] of params.entries()) {
+
+    pairs.push([
+      key,
+      value
+    ]);
+  }
+
+
+  pairs.sort(
+    ([a], [b]) =>
+      a.localeCompare(b)
+  );
+
+
+  const dataCheckString =
+    pairs
+      .map(
+        ([key, value]) =>
+          `${key}=${value}`
+      )
+      .join('\n');
+
+
+  // ----------------------------------------------------------
+  // Telegram secret key
+  // ----------------------------------------------------------
+
+  const secretKey =
+    crypto
+      .createHmac(
+        'sha256',
+        'WebAppData'
+      )
+      .update(BOT_TOKEN)
+      .digest();
+
+
+  // ----------------------------------------------------------
+  // Calculate hash
+  // ----------------------------------------------------------
+
+  const calculatedHash =
+    crypto
+      .createHmac(
+        'sha256',
+        secretKey
+      )
+      .update(dataCheckString)
+      .digest('hex');
+
+
+  // ----------------------------------------------------------
+  // Timing-safe comparison
+  // ----------------------------------------------------------
+
+  const calculatedBuffer =
+    Buffer.from(
+      calculatedHash,
+      'hex'
+    );
+
+  const receivedBuffer =
+    Buffer.from(
+      receivedHash,
+      'hex'
+    );
+
+
+  if (
+    calculatedBuffer.length !==
+    receivedBuffer.length
+  ) {
+
+    throw new Error(
+      'Invalid Telegram initData'
+    );
+  }
+
+
+  if (
+    !crypto.timingSafeEqual(
+      calculatedBuffer,
+      receivedBuffer
+    )
+  ) {
+
+    throw new Error(
+      'Invalid Telegram initData'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Extract Telegram user
+  // ----------------------------------------------------------
+
+  let telegramUser;
+
+
+  try {
+
+    telegramUser =
+      JSON.parse(
+        params.get('user') || 'null'
+      );
+
+  } catch (error) {
+
+    throw new Error(
+      'Invalid Telegram user data'
+    );
+  }
+
+
+  if (!telegramUser?.id) {
+
+    throw new Error(
+      'Telegram user is missing'
+    );
+  }
+
+
+  return telegramUser;
 }
 
 
-/* =========================================================
-   TELEGRAM MINI APP INIT DATA VERIFICATION
-   ========================================================= */
+// ============================================================
+// AUTH MIDDLEWARE
+// ============================================================
 
-function verifyTelegramInitData(initData) {
+function authMiddleware(
+  req,
+  res,
+  next
+) {
 
-    if (!initData) {
-        return null;
-    }
+  try {
 
-    try {
+    const initData =
+      req.body?.initData ||
+      req.headers[
+        'x-telegram-init-data'
+      ];
 
-        const params =
-            new URLSearchParams(initData);
-
-        const receivedHash =
-            params.get("hash");
-
-        if (!receivedHash) {
-            return null;
-        }
-
-        params.delete("hash");
-
-        const dataCheckString =
-            [...params.entries()]
-                .sort(([a], [b]) =>
-                    a.localeCompare(b)
-                )
-                .map(([key, value]) =>
-                    `${key}=${value}`
-                )
-                .join("\n");
-
-        const secretKey =
-            crypto
-                .createHmac(
-                    "sha256",
-                    "WebAppData"
-                )
-                .update(BOT_TOKEN)
-                .digest();
-
-        const calculatedHash =
-            crypto
-                .createHmac(
-                    "sha256",
-                    secretKey
-                )
-                .update(dataCheckString)
-                .digest("hex");
-
-        const receivedBuffer =
-            Buffer.from(receivedHash, "hex");
-
-        const calculatedBuffer =
-            Buffer.from(calculatedHash, "hex");
-
-        if (
-            receivedBuffer.length !==
-            calculatedBuffer.length
-        ) {
-            return null;
-        }
-
-        if (
-            !crypto.timingSafeEqual(
-                receivedBuffer,
-                calculatedBuffer
-            )
-        ) {
-            return null;
-        }
-
-        const userRaw =
-            params.get("user");
-
-        if (!userRaw) {
-            return null;
-        }
-
-        return JSON.parse(userRaw);
-
-    } catch (error) {
-
-        console.error(
-            "Telegram initData verification failed:",
-            error
-        );
-
-        return null;
-    }
-}
-
-
-function requireTelegramUser(req, res) {
 
     const telegramUser =
-        verifyTelegramInitData(
-            req.body?.initData
-        );
+      validateInitData(
+        initData
+      );
 
-    if (!telegramUser?.id) {
 
-        res.status(401).json({
-            error: "Invalid Telegram Mini App authorization."
-        });
-
-        return null;
-    }
-
-    ensureUser(
+    const account =
+      getUser(
         telegramUser.id,
-        telegramUser
-    );
-
-    saveDatabase();
-
-    return telegramUser;
-}
-
-
-/* =========================================================
-   START COMMAND
-   ========================================================= */
-
-bot.start(async ctx => {
-
-    const user =
-        ensureUser(
-            ctx.from.id,
-            ctx.from
-        );
-
-    saveDatabase();
-
-    await ctx.reply(
-        `Welcome to Ayah Quiz, ${ctx.from.first_name || "there"}! 🌙
-
-Memorize. Revise. Test yourself.
-
-✨ Pro is available for 10 Telegram Stars or 25 ETB via Telebirr.
-
-Use the button below to open the Quran memorization challenge.`,
-        Markup.inlineKeyboard([
-            [
-                Markup.button.webApp(
-                    "🚀 Open Ayah Quiz",
-                    WEB_APP_URL
-                )
-            ]
-        ])
-    );
-});
-
-
-/* =========================================================
-   TELEBIRR PHOTO RECEIPTS
-   ========================================================= */
-
-bot.on("photo", async ctx => {
-
-    const userId =
-        ctx.from.id;
-
-    const userName =
-        ctx.from.first_name ||
-        "Unknown";
-
-    const userHandle =
-        ctx.from.username
-            ? `@${ctx.from.username}`
-            : "No Username";
-
-    ensureUser(
-        userId,
-        ctx.from
-    );
-
-    saveDatabase();
-
-    const photo =
-        ctx.message.photo[
-            ctx.message.photo.length - 1
-        ];
-
-    const caption =
-        `💰 *New Ayah Quiz Pro Payment Proof*
-
-User: ${escapeMarkdown(userName)}
-Username: ${escapeMarkdown(userHandle)}
-Telegram ID: \`${userId}\`
-
-Amount expected: *25 ETB*
-Method: Telebirr`;
-
-    try {
-
-        await ctx.telegram.sendPhoto(
-            ADMIN_TELEGRAM_ID,
-            photo.file_id,
-            {
-                caption,
-                parse_mode: "Markdown",
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            {
-                                text: "✅ Approve Pro",
-                                callback_data:
-                                    `approve_${userId}`
-                            }
-                        ],
-                        [
-                            {
-                                text: "❌ Reject",
-                                callback_data:
-                                    `reject_${userId}`
-                            }
-                        ]
-                    ]
-                }
-            }
-        );
-
-        await ctx.reply(
-            "📸 Receipt received!\n\n" +
-            "Your payment is waiting for admin verification. " +
-            "You will receive a Telegram message after the decision."
-        );
-
-    } catch (error) {
-
-        console.error(
-            "Failed forwarding receipt:",
-            error
-        );
-
-        await ctx.reply(
-            "I couldn't forward the receipt. Please contact @luck_7n directly."
-        );
-    }
-});
-
-
-/* =========================================================
-   ADMIN: APPROVE TELEBIRR
-   ========================================================= */
-
-bot.action(/^approve_(\d+)$/, async ctx => {
-
-    if (Number(ctx.from.id) !== ADMIN_TELEGRAM_ID) {
-
-        await ctx.answerCbQuery(
-            "You are not authorized.",
-            {
-                show_alert: true
-            }
-        );
-
-        return;
-    }
-
-    const targetUserId =
-        ctx.match[1];
-
-    const user =
-        ensureUser(targetUserId);
-
-    user.isPro = true;
-
-    user.updatedAt =
-        new Date().toISOString();
-
-    user.payments =
-        user.payments || [];
-
-    user.payments.push({
-        type: "telebirr",
-        amount: "25 ETB",
-        status: "approved",
-        approvedBy: ADMIN_TELEGRAM_ID,
-        date: new Date().toISOString()
-    });
-
-    saveDatabase();
-
-    await ctx.answerCbQuery(
-        "Pro activated."
-    );
-
-    try {
-
-        await ctx.editMessageCaption(
-            `✅ APPROVED
-
-User ID: \`${targetUserId}\`
-Pro: ACTIVE ⭐`,
-            {
-                parse_mode: "Markdown"
-            }
-        );
-
-    } catch (e) {}
-
-    try {
-
-        await ctx.telegram.sendMessage(
-            Number(targetUserId),
-            `🎉 Congratulations!
-
-Your 25 ETB Telebirr payment has been verified.
-
-⭐ Ayah Quiz Pro is now ACTIVE.
-
-Open your Ayah Quiz Mini App again to unlock the Pro features.`
-        );
-
-    } catch (error) {
-
-        console.warn(
-            "Could not notify approved user:",
-            error.message
-        );
-    }
-});
-
-
-/* =========================================================
-   ADMIN: REJECT TELEBIRR
-   ========================================================= */
-
-bot.action(/^reject_(\d+)$/, async ctx => {
-
-    if (Number(ctx.from.id) !== ADMIN_TELEGRAM_ID) {
-
-        await ctx.answerCbQuery(
-            "You are not authorized.",
-            {
-                show_alert: true
-            }
-        );
-
-        return;
-    }
-
-    const targetUserId =
-        ctx.match[1];
-
-    await ctx.answerCbQuery(
-        "Payment rejected."
-    );
-
-    try {
-
-        await ctx.editMessageCaption(
-            `❌ REJECTED
-
-User ID: \`${targetUserId}\``,
-            {
-                parse_mode: "Markdown"
-            }
-        );
-
-    } catch (e) {}
-
-    try {
-
-        await ctx.telegram.sendMessage(
-            Number(targetUserId),
-            `❌ Your Ayah Quiz Pro payment proof was rejected.
-
-Please verify that you sent 25 ETB to 0938054751 and send a valid receipt if necessary.`
-        );
-
-    } catch (e) {}
-});
-
-
-/* =========================================================
-   CHECK PRO
-   ========================================================= */
-
-app.post("/api/check-pro", (req, res) => {
-
-    const user =
-        requireTelegramUser(
-            req,
-            res
-        );
-
-    if (!user) return;
-
-    const dbUser =
-        userDatabase[String(user.id)];
-
-    res.json({
-        ok: true,
-        isPro: Boolean(dbUser?.isPro),
-        isAdmin:
-            Number(user.id) ===
-            ADMIN_TELEGRAM_ID
-    });
-});
-
-
-/* =========================================================
-   CREATE TELEGRAM STARS INVOICE
-   ========================================================= */
-
-app.post("/api/create-invoice", async (req, res) => {
-
-    const user =
-        requireTelegramUser(
-            req,
-            res
-        );
-
-    if (!user) return;
-
-    const dbUser =
-        userDatabase[String(user.id)];
-
-    if (dbUser.isPro) {
-
-        return res.json({
-            ok: true,
-            alreadyPro: true
-        });
-    }
-
-    try {
-
-        const response =
-            await fetch(
-                `https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`,
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-                        title:
-                            "Ayah Quiz Pro",
-
-                        description:
-                            "Unlock Juz filters, recitation audio, bookmarks, mistake drills, Hifz statistics and Pro training tools.",
-
-                        payload:
-                            `ayahquiz_pro_${user.id}_${Date.now()}`,
-
-                        currency:
-                            "XTR",
-
-                        prices: [
-                            {
-                                label:
-                                    "Ayah Quiz Pro",
-                                amount:
-                                    PRO_STARS
-                            }
-                        ]
-                    })
-                }
-            );
-
-        const data =
-            await response.json();
-
-        if (!data.ok) {
-
-            console.error(
-                "Telegram invoice error:",
-                data
-            );
-
-            return res.status(400).json({
-                error:
-                    data.description ||
-                    "Could not create invoice."
-            });
+        {
+          firstName:
+            telegramUser.first_name || '',
+
+          lastName:
+            telegramUser.last_name || '',
+
+          username:
+            telegramUser.username || ''
         }
+      );
 
-        return res.json({
-            ok: true,
-            invoiceLink:
-                data.result
-        });
 
-    } catch (error) {
+    req.telegramUser =
+      telegramUser;
 
-        console.error(
-            "Invoice creation failed:",
-            error
-        );
+    req.account =
+      account;
 
-        return res.status(500).json({
-            error:
-                "Could not create Telegram Stars invoice."
-        });
-    }
-});
 
+    next();
 
-/* =========================================================
-   TELEGRAM STARS PRE-CHECKOUT
-   =========================================================
-
-   Telegram requires the bot to answer pre_checkout_query.
-   ========================================================= */
-
-bot.on("pre_checkout_query", async ctx => {
-
-    const query =
-        ctx.update.pre_checkout_query;
-
-    try {
-
-        const payload =
-            query.invoice_payload || "";
-
-        const match =
-            payload.match(
-                /^ayahquiz_pro_(\d+)_/
-            );
-
-        if (!match) {
-
-            await ctx.answerPreCheckoutQuery(
-                false,
-                "Invalid Ayah Quiz order."
-            );
-
-            return;
-        }
-
-        const targetUserId =
-            Number(match[1]);
-
-        if (
-            Number(query.from.id) !==
-            targetUserId
-        ) {
-
-            await ctx.answerPreCheckoutQuery(
-                false,
-                "This invoice belongs to another Telegram account."
-            );
-
-            return;
-        }
-
-        if (
-            query.currency !== "XTR" ||
-            Number(query.total_amount) !== PRO_STARS
-        ) {
-
-            await ctx.answerPreCheckoutQuery(
-                false,
-                "Invalid payment amount."
-            );
-
-            return;
-        }
-
-        await ctx.answerPreCheckoutQuery(
-            true
-        );
-
-    } catch (error) {
-
-        console.error(
-            "Pre-checkout error:",
-            error
-        );
-
-        try {
-
-            await ctx.answerPreCheckoutQuery(
-                false,
-                "Payment could not be verified."
-            );
-
-        } catch (e) {}
-    }
-});
-
-
-/* =========================================================
-   TELEGRAM STARS SUCCESSFUL PAYMENT
-   =========================================================
-
-   THIS is where Pro is actually granted.
-   ========================================================= */
-
-bot.on("successful_payment", async ctx => {
-
-    const payment =
-        ctx.message.successful_payment;
-
-    if (!payment) return;
-
-    const payload =
-        payment.invoice_payload || "";
-
-    const match =
-        payload.match(
-            /^ayahquiz_pro_(\d+)_/
-        );
-
-    if (!match) {
-
-        console.warn(
-            "Unknown payment payload:",
-            payload
-        );
-
-        return;
-    }
-
-    const targetUserId =
-        Number(match[1]);
-
-    if (
-        Number(ctx.from.id) !==
-        targetUserId
-    ) {
-
-        console.error(
-            "Payment user mismatch."
-        );
-
-        return;
-    }
-
-    const user =
-        ensureUser(
-            targetUserId,
-            ctx.from
-        );
-
-    user.isPro = true;
-
-    user.updatedAt =
-        new Date().toISOString();
-
-    user.payments =
-        user.payments || [];
-
-    const chargeId =
-        payment.telegram_payment_charge_id;
-
-    const duplicate =
-        user.payments.some(
-            item =>
-                item.telegramPaymentChargeId ===
-                chargeId
-        );
-
-    if (!duplicate) {
-
-        user.payments.push({
-            type: "telegram_stars",
-            amount: payment.total_amount,
-            currency: payment.currency,
-            status: "paid",
-            telegramPaymentChargeId:
-                chargeId,
-            date:
-                new Date().toISOString()
-        });
-    }
-
-    saveDatabase();
-
-    console.log(
-        `Pro activated for Telegram user ${targetUserId}`
-    );
-
-    try {
-
-        await ctx.reply(
-            `🎉 Payment confirmed!
-
-⭐ Ayah Quiz Pro is now ACTIVE.
-
-Open the Mini App again to use your Pro Hifz tools.`
-        );
-
-    } catch (e) {}
-});
-
-
-/* =========================================================
-   ADMIN STATUS
-   ========================================================= */
-
-app.get("/api/health", (req, res) => {
-
-    res.json({
-        ok: true,
-        service: "Ayah Quiz Backend",
-        time: new Date().toISOString()
-    });
-});
-
-app.get("/", (req, res) => {
-
-    res.send(
-        "Ayah Quiz Backend is running successfully."
-    );
-});
-
-
-/* =========================================================
-   ERROR HANDLER
-   ========================================================= */
-
-app.use((error, req, res, next) => {
+  } catch (error) {
 
     console.error(
-        "Express error:",
-        error
+      'Authentication error:',
+      error.message
     );
 
-    res.status(500).json({
-        error: "Internal server error."
+
+    return res.status(401).json({
+      error:
+        error.message ||
+        'Unauthorized'
     });
-});
+  }
+}
 
 
-/* =========================================================
-   START SERVER
-   ========================================================= */
+// ============================================================
+// PUBLIC USER RESPONSE
+// ============================================================
 
-app.listen(PORT, () => {
+function publicUser(
+  account,
+  telegramUser
+) {
 
-    console.log(
-        `Ayah Quiz API listening on port ${PORT}`
+  const id =
+    String(telegramUser.id);
+
+
+  const isAdmin =
+    id === ADMIN_TELEGRAM_ID;
+
+
+  return {
+
+    id,
+
+    first_name:
+      telegramUser.first_name || '',
+
+    last_name:
+      telegramUser.last_name || '',
+
+    username:
+      telegramUser.username || '',
+
+    isPro:
+      isAdmin ||
+      Boolean(account.isPro),
+
+    isAdmin
+  };
+}
+
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
+
+app.get(
+  '/',
+  (req, res) => {
+
+    res.json({
+      ok: true,
+      service:
+        'Ayah Quiz backend',
+      version:
+        '2.0.0'
+    });
+  }
+);
+
+
+app.get(
+  '/api/health',
+  (req, res) => {
+
+    res.json({
+      ok: true,
+      botConfigured:
+        Boolean(BOT_TOKEN)
+    });
+  }
+);
+
+
+// ============================================================
+// AUTHENTICATE MINI APP USER
+// ============================================================
+
+app.post(
+  '/api/auth',
+  authMiddleware,
+  (req, res) => {
+
+    const userId =
+      String(
+        req.telegramUser.id
+      );
+
+
+    // Admin always gets Pro.
+    if (
+      userId ===
+      ADMIN_TELEGRAM_ID
+    ) {
+
+      req.account.isPro =
+        true;
+
+      saveUsers();
+    }
+
+
+    return res.json({
+      user:
+        publicUser(
+          req.account,
+          req.telegramUser
+        )
+    });
+  }
+);
+
+
+// ============================================================
+// TELEGRAM BOT API HELPER
+// ============================================================
+
+async function telegramApi(
+  method,
+  body
+) {
+
+  const response =
+    await fetch(
+      `https://api.telegram.org/bot${BOT_TOKEN}/${method}`,
+      {
+        method: 'POST',
+
+        headers: {
+          'Content-Type':
+            'application/json'
+        },
+
+        body:
+          JSON.stringify(body)
+      }
     );
 
-    console.log(
-        `Mini App: ${WEB_APP_URL}`
+
+  const data =
+    await response.json();
+
+
+  if (!data.ok) {
+
+    throw new Error(
+      data.description ||
+      `Telegram API ${method} failed`
     );
-
-    console.log(
-        `Admin ID: ${ADMIN_TELEGRAM_ID}`
-    );
-});
+  }
 
 
-/* =========================================================
-   START BOT
-   ========================================================= */
+  return data.result;
+}
 
-bot.launch()
-    .then(() => {
-        console.log(
-            "Ayah Quiz Telegram bot launched."
+
+// ============================================================
+// CREATE TELEGRAM STARS INVOICE
+// ============================================================
+
+app.post(
+  '/api/create-invoice',
+  authMiddleware,
+  async (req, res) => {
+
+    try {
+
+      const userId =
+        String(
+          req.telegramUser.id
         );
-    })
-    .catch(error => {
+
+
+      // Already Pro?
+      if (
+        userId ===
+        ADMIN_TELEGRAM_ID ||
+        req.account.isPro
+      ) {
+
+        return res.json({
+          alreadyPro: true
+        });
+      }
+
+
+      /*
+        IMPORTANT:
+
+        The payload contains the VERIFIED
+        Telegram user ID, not a user ID
+        supplied by the browser.
+      */
+
+      const payload =
+        `ayahquiz_pro_${userId}`;
+
+
+      const invoiceLink =
+        await telegramApi(
+          'createInvoiceLink',
+          {
+
+            title:
+              'Ayah Quiz Pro',
+
+            description:
+              'Unlimited Quran quiz practice, advanced revision, bookmarks, mistakes and Pro features.',
+
+            payload,
+
+            currency:
+              'XTR',
+
+            prices: [
+              {
+                label:
+                  'Ayah Quiz Pro',
+
+                amount:
+                  PRO_STARS
+              }
+            ]
+          }
+        );
+
+
+      return res.json({
+        invoiceLink
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        'create-invoice error:',
+        error
+      );
+
+
+      return res.status(500).json({
+        error:
+          'Could not create Telegram Stars invoice.'
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// TELEBIRR PAYMENT REQUEST
+// ============================================================
+
+app.post(
+  '/api/pro/telebirr',
+  authMiddleware,
+  async (req, res) => {
+
+    const reference =
+      String(
+        req.body?.reference || ''
+      ).trim();
+
+
+    if (
+      !reference ||
+      reference.length < 3 ||
+      reference.length > 100
+    ) {
+
+      return res.status(400).json({
+        error:
+          'Enter a valid Telebirr transaction/reference ID.'
+      });
+    }
+
+
+    const userId =
+      String(
+        req.telegramUser.id
+      );
+
+
+    const account =
+      req.account;
+
+
+    // Save request.
+    account.telebirrRequest = {
+
+      reference,
+
+      amount:
+        TELEBIRR_ETB,
+
+      phone:
+        TELEBIRR_NUMBER,
+
+      name:
+        TELEBIRR_NAME,
+
+      submittedAt:
+        new Date().toISOString(),
+
+      status:
+        'pending'
+    };
+
+
+    saveUsers();
+
+
+    // Notify admin.
+    try {
+
+      await bot.telegram.sendMessage(
+
+        ADMIN_TELEGRAM_ID,
+
+        [
+          '🧾 <b>New Ayah Quiz Pro — Telebirr request</b>',
+
+          `User ID: <code>${escapeTelegram(
+            userId
+          )}</code>`,
+
+          `Name: ${escapeTelegram(
+            account.firstName || ''
+          )} ${escapeTelegram(
+            account.lastName || ''
+          )}`,
+
+          `Username: ${
+            account.username
+              ? '@' +
+                escapeTelegram(
+                  account.username
+                )
+              : 'none'
+          }`,
+
+          `Amount: <b>${TELEBIRR_ETB} ETB</b>`,
+
+          `Reference: <code>${escapeTelegram(
+            reference
+          )}</code>`
+        ].join('\n'),
+
+        {
+          parse_mode:
+            'HTML',
+
+          reply_markup: {
+
+            inline_keyboard: [
+
+              [
+
+                {
+                  text:
+                    '✅ Approve',
+
+                  callback_data:
+                    `tb_approve_${userId}`
+                },
+
+                {
+                  text:
+                    '❌ Reject',
+
+                  callback_data:
+                    `tb_reject_${userId}`
+                }
+
+              ]
+
+            ]
+          }
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        'Could not notify admin:',
+        error
+      );
+    }
+
+
+    return res.json({
+      ok: true
+    });
+  }
+);
+
+
+// ============================================================
+// TELEGRAM HTML ESCAPE
+// ============================================================
+
+function escapeTelegram(
+  value
+) {
+
+  return String(value)
+    .replace(
+      /[<>&"]/g,
+      character => {
+
+        const map = {
+
+          '<':
+            '&lt;',
+
+          '>':
+            '&gt;',
+
+          '&':
+            '&amp;',
+
+          '"':
+            '&quot;'
+        };
+
+        return map[
+          character
+        ];
+      }
+    );
+}
+
+
+// ============================================================
+// TELEGRAM BOT
+// ============================================================
+
+const bot =
+  new Telegraf(
+    BOT_TOKEN
+  );
+
+
+// ============================================================
+// /START
+// ============================================================
+
+bot.start(
+  async ctx => {
+
+    try {
+
+      await ctx.reply(
+
+        [
+          'Assalamu alaikum 🌙',
+          '',
+          'Welcome to Ayah Quiz.',
+          '',
+          'Open the Mini App to practice Quran memorization.'
+        ].join('\n'),
+
+        {
+          reply_markup: {
+
+            inline_keyboard: [
+
+              [
+
+                {
+                  text:
+                    '📖 Open Ayah Quiz',
+
+                  web_app: {
+                    url:
+                      FRONTEND_URL
+                  }
+                }
+
+              ]
+
+            ]
+          }
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        '/start error:',
+        error
+      );
+    }
+  }
+);
+
+
+// ============================================================
+// TELEGRAM STARS PRE-CHECKOUT
+// ============================================================
+
+bot.on(
+  'pre_checkout_query',
+  async ctx => {
+
+    const query =
+      ctx.preCheckoutQuery;
+
+
+    const expectedPayload =
+      `ayahquiz_pro_${query.from.id}`;
+
+
+    /*
+      Verify:
+
+      - Currency is XTR
+      - Amount is exactly 10 Stars
+      - Payload belongs to the same Telegram user
+    */
+
+    if (
+      query.currency !== 'XTR' ||
+      Number(query.total_amount) !==
+        PRO_STARS ||
+      query.invoice_payload !==
+        expectedPayload
+    ) {
+
+      try {
+
+        await ctx.answerPreCheckoutQuery(
+          false,
+          'This Pro invoice is invalid or expired.'
+        );
+
+      } catch (error) {
 
         console.error(
-            "Telegram bot failed to launch:",
-            error
+          'Invalid pre-checkout response:',
+          error
+        );
+      }
+
+      return;
+    }
+
+
+    try {
+
+      await ctx.answerPreCheckoutQuery(
+        true
+      );
+
+    } catch (error) {
+
+      console.error(
+        'pre_checkout error:',
+        error
+      );
+    }
+  }
+);
+
+
+// ============================================================
+// SUCCESSFUL TELEGRAM STARS PAYMENT
+// ============================================================
+
+bot.on(
+  'message',
+  async ctx => {
+
+    const payment =
+      ctx.message?.successful_payment;
+
+
+    if (!payment) {
+      return;
+    }
+
+
+    // We only support Telegram Stars here.
+    if (
+      payment.currency !== 'XTR'
+    ) {
+      return;
+    }
+
+
+    const expectedPayload =
+      `ayahquiz_pro_${ctx.from.id}`;
+
+
+    // Never activate Pro for an unexpected invoice.
+    if (
+      payment.invoice_payload !==
+        expectedPayload ||
+      Number(payment.total_amount) !==
+        PRO_STARS
+    ) {
+
+      console.warn(
+        'Unexpected Stars payment payload:',
+        payment.invoice_payload
+      );
+
+      return;
+    }
+
+
+    const account =
+      getUser(
+        ctx.from.id,
+        {
+
+          firstName:
+            ctx.from.first_name || '',
+
+          lastName:
+            ctx.from.last_name || '',
+
+          username:
+            ctx.from.username || ''
+        }
+      );
+
+
+    account.isPro =
+      true;
+
+
+    account.starsPayment = {
+
+      chargeId:
+        payment.telegram_payment_charge_id,
+
+      amount:
+        payment.total_amount,
+
+      currency:
+        payment.currency,
+
+      paidAt:
+        new Date().toISOString()
+    };
+
+
+    saveUsers();
+
+
+    try {
+
+      await ctx.reply(
+
+        [
+          '🎉 <b>Ayah Quiz Pro activated!</b>',
+          '',
+          'Your Pro features are now unlocked.',
+          '',
+          'Open the Mini App again to refresh your account.'
+        ].join('\n'),
+
+        {
+          parse_mode:
+            'HTML'
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        'Payment confirmation message failed:',
+        error
+      );
+    }
+  }
+);
+
+
+// ============================================================
+// TELEBIRR APPROVE
+// ============================================================
+
+bot.action(
+  /^tb_approve_(\d+)$/,
+  async ctx => {
+
+    // ONLY ADMIN can approve.
+    if (
+      String(ctx.from.id) !==
+      ADMIN_TELEGRAM_ID
+    ) {
+
+      return ctx.answerCbQuery(
+        'Not authorized.',
+        {
+          show_alert: true
+        }
+      );
+    }
+
+
+    const userId =
+      ctx.match[1];
+
+
+    const account =
+      users[userId];
+
+
+    if (!account) {
+
+      return ctx.answerCbQuery(
+        'User not found.',
+        {
+          show_alert: true
+        }
+      );
+    }
+
+
+    account.isPro =
+      true;
+
+
+    if (
+      account.telebirrRequest
+    ) {
+
+      account.telebirrRequest.status =
+        'approved';
+    }
+
+
+    account.telebirrApprovedAt =
+      new Date().toISOString();
+
+
+    saveUsers();
+
+
+    // Notify user.
+    try {
+
+      await ctx.telegram.sendMessage(
+        userId,
+
+        [
+          '🎉 <b>Ayah Quiz Pro approved!</b>',
+          '',
+          'Your Telebirr payment has been approved.',
+          '',
+          'Reopen the Mini App to unlock Pro.'
+        ].join('\n'),
+
+        {
+          parse_mode:
+            'HTML'
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        'Could not notify approved user:',
+        error
+      );
+    }
+
+
+    await ctx.answerCbQuery(
+      'Pro approved.'
+    );
+
+
+    // Remove buttons.
+    try {
+
+      await ctx.editMessageReplyMarkup({
+        inline_keyboard: []
+      });
+
+    } catch (_) {}
+  }
+);
+
+
+// ============================================================
+// TELEBIRR REJECT
+// ============================================================
+
+bot.action(
+  /^tb_reject_(\d+)$/,
+  async ctx => {
+
+    // ONLY ADMIN can reject.
+    if (
+      String(ctx.from.id) !==
+      ADMIN_TELEGRAM_ID
+    ) {
+
+      return ctx.answerCbQuery(
+        'Not authorized.',
+        {
+          show_alert: true
+        }
+      );
+    }
+
+
+    const userId =
+      ctx.match[1];
+
+
+    const account =
+      users[userId];
+
+
+    if (!account) {
+
+      return ctx.answerCbQuery(
+        'User not found.',
+        {
+          show_alert: true
+        }
+      );
+    }
+
+
+    if (
+      account.telebirrRequest
+    ) {
+
+      account.telebirrRequest.status =
+        'rejected';
+    }
+
+
+    saveUsers();
+
+
+    // Notify user.
+    try {
+
+      await ctx.telegram.sendMessage(
+
+        userId,
+
+        [
+          'Your Telebirr Pro request was not approved.',
+          '',
+          `Please contact ${SUPPORT_USERNAME} with your payment receipt.`
+        ].join('\n')
+      );
+
+    } catch (error) {
+
+      console.error(
+        'Could not notify rejected user:',
+        error
+      );
+    }
+
+
+    await ctx.answerCbQuery(
+      'Request rejected.'
+    );
+
+
+    // Remove buttons.
+    try {
+
+      await ctx.editMessageReplyMarkup({
+        inline_keyboard: []
+      });
+
+    } catch (_) {}
+  }
+);
+
+
+// ============================================================
+// BOT ERROR HANDLER
+// ============================================================
+
+bot.catch(
+  error => {
+
+    console.error(
+      'Telegram bot error:',
+      error
+    );
+  }
+);
+
+
+// ============================================================
+// SERVER ERROR HANDLER
+// ============================================================
+
+app.use(
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
+
+    console.error(
+      'Express error:',
+      error
+    );
+
+
+    if (
+      res.headersSent
+    ) {
+      return next(error);
+    }
+
+
+    res.status(500).json({
+      error:
+        'Server error'
+    });
+  }
+);
+
+
+// ============================================================
+// START SERVER + BOT
+// ============================================================
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `Ayah Quiz API listening on port ${PORT}`
+    );
+
+
+    bot.launch()
+      .then(() => {
+
+        console.log(
+          'Telegram bot launched successfully'
         );
 
-        process.exit(1);
-    });
+      })
+      .catch(error => {
 
-
-/* =========================================================
-   GRACEFUL SHUTDOWN
-   ========================================================= */
-
-process.once(
-    "SIGINT",
-    () => bot.stop("SIGINT")
-);
-
-process.once(
-    "SIGTERM",
-    () => bot.stop("SIGTERM")
+        console.error(
+          'Telegram bot failed to launch:',
+          error
+        );
+      });
+  }
 );
 
 
-/* =========================================================
-   HELPERS
-   ========================================================= */
+// ============================================================
+// GRACEFUL SHUTDOWN
+// ============================================================
 
-function escapeMarkdown(text) {
+process.once(
+  'SIGINT',
+  () => {
 
-    return String(text)
-        .replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
-}
+    console.log(
+      'Stopping bot...'
+    );
+
+    bot.stop(
+      'SIGINT'
+    );
+  }
+);
+
+
+process.once(
+  'SIGTERM',
+  () => {
+
+    console.log(
+      'Stopping bot...'
+    );
+
+    bot.stop(
+      'SIGTERM'
+    );
+  }
+);
