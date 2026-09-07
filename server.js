@@ -221,35 +221,24 @@ app.post('/api/pro/telebirr', authMiddleware, async (req, res) => {
     phone:TELEBIRR_NUMBER,
     name:TELEBIRR_NAME,
     submittedAt:new Date().toISOString(),
-    status:'pending'
+    status:'pending_screenshot'
   };
   saveUsers();
 
   try {
-    await bot.telegram.sendMessage(
-      ADMIN_TELEGRAM_ID,
-      [
-        '🧾 <b>New Ayah Quiz Pro — Telebirr request</b>',
-        account.username
-          ? `Username: <b>@${escapeTelegram(account.username)}</b>`
-          : `Account: <a href="tg://user?id=${id}">${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Telegram user')}</a>\nUsername: <i>not set</i>`,
-        `Display name: ${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Unknown')}`,
-        `Telegram ID: <code>${id}</code>`,
-        `Amount: <b>${TELEBIRR_ETB} ETB</b>`,
-        `Reference: <code>${escapeTelegram(reference)}</code>`
-      ].join('\n'),
-      {
-        parse_mode:'HTML',
-        reply_markup:{
-          inline_keyboard:[[
-            {text:'✅ Approve',callback_data:`tb_approve_${id}`},
-            {text:'❌ Reject',callback_data:`tb_reject_${id}`}
-          ]]
-        }
-      }
-    );
+    await bot.telegram.sendMessage(ADMIN_TELEGRAM_ID, [
+      '🧾 <b>New Ayah Quiz Pro — Telebirr reference submitted</b>',
+      account.username
+        ? `Username: <b>@${escapeTelegram(account.username)}</b>`
+        : `Account: <a href="tg://user?id=${id}">${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Telegram user')}</a>\nUsername: <i>not set</i>`,
+      `Display name: ${escapeTelegram(account.displayName || `${account.firstName || ''} ${account.lastName || ''}`.trim() || 'Unknown')}`,
+      `Telegram ID: <code>${id}</code>`,
+      `Amount: <b>${TELEBIRR_ETB} ETB</b>`,
+      `Reference: <code>${escapeTelegram(reference)}</code>`,
+      '📸 Waiting for the payment screenshot in this bot chat.'
+    ].join('\n'), {parse_mode:'HTML'});
   } catch (err) {
-    console.error('Admin notification failed:', err);
+    console.error('Admin reference notification failed:', err);
   }
 
   res.json({ok:true});
@@ -261,32 +250,201 @@ function escapeTelegram(value) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-bot.start(async (ctx) => {
-  await ctx.reply(
-    'Assalamu alaikum 🌙\\n\\nWelcome to Ayah Quiz. Open the Mini App from the bot menu to practice Quran memorization.',
+function accountName(from) {
+  return [from.first_name, from.last_name].filter(Boolean).join(' ') || 'Telegram user';
+}
+
+function accountIdentityHtml(from) {
+  return from.username
+    ? `@${escapeTelegram(from.username)}`
+    : `<a href="tg://user?id=${from.id}">${escapeTelegram(accountName(from))}</a>`;
+}
+
+async function sendQuizHome(ctx) {
+  return ctx.reply(
+    '🕌 <b>Ayah Quiz</b>\n\n' +
+    'اختبر حفظك للقرآن — واجعل المراجعة عادةً جميلة.\n\n' +
+    '🎯 Free Quran quiz\n' +
+    '⚡ XP & streaks\n' +
+    '📖 Arabic ayahs + translation\n' +
+    '✦ Pro revision tools',
     {
-      reply_markup:{
-        inline_keyboard:[[
-          {text:'📖 Open Ayah Quiz', web_app:{url:FRONTEND_URL}}
-        ]]
-      }
+      parse_mode:'HTML',
+      reply_markup:{inline_keyboard:[
+        [{text:'🚀 Open Ayah Quiz', web_app:{url:FRONTEND_URL}}],
+        [{text:'✦ What is Pro?',callback_data:'menu_pro'},{text:'❓ Help',callback_data:'menu_help'}],
+        [{text:'💳 Payment',callback_data:'menu_payment'}]
+      ]}
     }
   );
+}
+
+async function sendProInfo(ctx) {
+  return ctx.reply(
+    '✦ <b>Ayah Quiz Pro</b>\n\n' +
+    'The core Quran quiz stays free for everyone as a sadaqah. 🤍\n\n' +
+    '<b>Pro unlocks:</b>\n' +
+    '📖 Surah selection\n' +
+    '🕌 Juz selection\n' +
+    '📅 Daily practice\n' +
+    '🎧 Recitation\n' +
+    '🔖 Bookmarks\n' +
+    '🧠 Mistake drills\n' +
+    '🏅 Badges & achievements\n' +
+    '🗺️ Memorization map\n' +
+    '📊 Extended history & insights\n\n' +
+    '⭐ Telegram Stars: <b>10 Stars</b>\n' +
+    '💚 Telebirr: <b>25 ETB</b>',
+    {parse_mode:'HTML',reply_markup:{inline_keyboard:[
+      [{text:'✦ Open Pro & Pay',web_app:{url:FRONTEND_URL}}],
+      [{text:'💳 Payment instructions',callback_data:'menu_payment'}]
+    ]}}
+  );
+}
+
+async function sendPaymentInfo(ctx) {
+  return ctx.reply(
+    '💳 <b>Ayah Quiz Pro Payment</b>\n\n' +
+    '⭐ <b>Telegram Stars</b>\n' +
+    'Pay 10 Stars directly inside the Mini App. Pro activates automatically after Telegram confirms the payment.\n\n' +
+    '💚 <b>Telebirr</b>\n' +
+    `Send <b>${TELEBIRR_ETB} ETB</b> to <code>${TELEBIRR_NUMBER}</code> — ${escapeTelegram(TELEBIRR_NAME)}.\n\n` +
+    'Then open the Mini App → Pro → Telebirr and submit your transaction/reference ID.\n' +
+    'After that, <b>send your payment screenshot in this bot chat</b>. We will verify it manually and activate Pro.\n\n' +
+    `Support: ${escapeTelegram(SUPPORT_USERNAME)}`,
+    {parse_mode:'HTML',reply_markup:{inline_keyboard:[
+      [{text:'🚀 Open Ayah Quiz',web_app:{url:FRONTEND_URL}}],
+      [{text:'✦ Pro details',callback_data:'menu_pro'}]
+    ]}}
+  );
+}
+
+async function sendHelp(ctx) {
+  return ctx.reply(
+    '❓ <b>Ayah Quiz Help</b>\n\nChoose what you want to know:',
+    {parse_mode:'HTML',reply_markup:{inline_keyboard:[
+      [{text:'🎮 How to play',callback_data:'help_play'}],
+      [{text:'✦ Pro features',callback_data:'menu_pro'}],
+      [{text:'💳 Payment & verification',callback_data:'menu_payment'}],
+      [{text:'📖 About Ayah Quiz',callback_data:'menu_about'}],
+      [{text:'🛟 Support',callback_data:'menu_support'}]
+    ]}}
+  );
+}
+
+async function setBotMenu() {
+  try {
+    await bot.telegram.setMyCommands([
+      {command:'start',description:'Open Ayah Quiz welcome menu'},
+      {command:'quiz',description:'Open the Quran quiz'},
+      {command:'pro',description:'See Pro features and payment'},
+      {command:'payment',description:'Telebirr & Stars payment help'},
+      {command:'progress',description:'Open your progress in the app'},
+      {command:'profile',description:'Open your profile'},
+      {command:'help',description:'Get help and instructions'},
+      {command:'about',description:'About Ayah Quiz'},
+      {command:'support',description:'Contact support'},
+      {command:'admin',description:'Admin dashboard (admin only)'}
+    ]);
+  } catch (err) { console.error('setMyCommands:', err.message); }
+}
+
+bot.start(sendQuizHome);
+bot.command('quiz', async ctx => ctx.reply('🎯 Ready? Your next challenge is waiting.', {reply_markup:{inline_keyboard:[[{text:'🚀 Start Quiz',web_app:{url:FRONTEND_URL}}]]}}));
+bot.command('pro', sendProInfo);
+bot.command('payment', sendPaymentInfo);
+bot.command('help', sendHelp);
+bot.command('profile', async ctx => ctx.reply('👤 Your profile, XP, streak and settings are inside Ayah Quiz.', {reply_markup:{inline_keyboard:[[{text:'👤 Open Profile',web_app:{url:FRONTEND_URL}}]]}}));
+bot.command('progress', async ctx => ctx.reply('📊 Keep building your Hifz journey. Open the app to see your score, XP, streak and progress map.', {reply_markup:{inline_keyboard:[[{text:'📊 Open Progress',web_app:{url:FRONTEND_URL}}]]}}));
+bot.command('about', async ctx => ctx.reply('📖 <b>About Ayah Quiz</b>\n\nAyah Quiz is a Quran memorization challenge designed to make revision consistent, engaging and enjoyable. The core quiz is free for everyone as a sadaqah. 🤍', {parse_mode:'HTML',reply_markup:{inline_keyboard:[[{text:'🚀 Open Ayah Quiz',web_app:{url:FRONTEND_URL}}]]}}));
+bot.command('support', async ctx => ctx.reply(`🛟 <b>Support</b>\n\nNeed help with Pro or payment verification? Contact ${escapeTelegram(SUPPORT_USERNAME)} and keep your Telebirr reference/receipt ready.`, {parse_mode:'HTML'}));
+bot.command('admin', async ctx => {
+  if (String(ctx.from.id) !== ADMIN_TELEGRAM_ID) return ctx.reply('Not authorized.');
+  const all = Object.values(users);
+  const pro = all.filter(u => u.isPro).length;
+  const pending = all.filter(u => ['pending_screenshot','pending_review'].includes(u.telebirrRequest?.status));
+  const lines = pending.slice(0,20).map(u => {
+    const r=u.telebirrRequest;
+    const identity=u.username ? `@${escapeTelegram(u.username)}` : `<a href="tg://user?id=${u.id}">${escapeTelegram(u.displayName || u.firstName || 'Telegram user')}</a>`;
+    return `• ${identity} — <code>${escapeTelegram(r.reference)}</code> — ${r.status}`;
+  });
+  await ctx.reply([
+    '🛠 <b>Ayah Quiz Admin</b>',
+    `👥 Users: <b>${all.length}</b>`,
+    `✦ Pro: <b>${pro}</b>`,
+    `💳 Pending Telebirr: <b>${pending.length}</b>`,
+    pending.length ? '\n<b>Pending:</b>\n'+lines.join('\n') : '\nNo pending Telebirr requests.'
+  ].join('\n'), {parse_mode:'HTML'});
+});
+
+
+bot.action('menu_pro', async ctx => { await ctx.answerCbQuery(); await sendProInfo(ctx); });
+bot.action('menu_payment', async ctx => { await ctx.answerCbQuery(); await sendPaymentInfo(ctx); });
+bot.action('menu_help', async ctx => { await ctx.answerCbQuery(); await sendHelp(ctx); });
+bot.action('menu_about', async ctx => { await ctx.answerCbQuery(); await ctx.reply('📖 <b>About Ayah Quiz</b>\n\nA student-friendly Quran memorization challenge. Free core quiz, with optional Pro revision tools for serious practice. 🤍', {parse_mode:'HTML'}); });
+bot.action('menu_support', async ctx => { await ctx.answerCbQuery(); await ctx.reply(`🛟 Support: ${escapeTelegram(SUPPORT_USERNAME)}`, {parse_mode:'HTML'}); });
+bot.action('help_play', async ctx => {
+  await ctx.answerCbQuery();
+  await ctx.reply('🎮 <b>How to play</b>\n\n1️⃣ Open the Mini App.\n2️⃣ Start the free 10-question quiz.\n3️⃣ Choose the answer you believe matches the ayah.\n4️⃣ See the translation after answering.\n5️⃣ Earn XP and build your streak.\n\n✦ Pro adds focused revision tools such as Surah/Juz selection and mistake drills.', {parse_mode:'HTML',reply_markup:{inline_keyboard:[[{text:'🚀 Play now',web_app:{url:FRONTEND_URL}}],[{text:'❓ Back to Help',callback_data:'menu_help'}]]}});
+});
+
+// Telebirr screenshot verification. A user first submits the reference in the Mini App,
+// then sends the receipt screenshot here. The screenshot is forwarded to the admin with
+// the user's identity and the exact pending reference, so approval is a single tap.
+bot.on('photo', async ctx => {
+  const id = String(ctx.from.id);
+  const account = users[id];
+  const request = account?.telebirrRequest;
+  if (!request || !['pending_screenshot','pending_review'].includes(request.status)) {
+    return ctx.reply('📸 I received your photo, but I could not find a pending Telebirr Pro request. Submit your reference in Ayah Quiz → Pro → Telebirr first.');
+  }
+
+  const photos = ctx.message.photo || [];
+  const best = photos[photos.length - 1];
+  if (!best?.file_id) return ctx.reply('I could not read that image. Please send the screenshot again.');
+
+  request.screenshotFileId = best.file_id;
+  request.screenshotReceivedAt = new Date().toISOString();
+  request.status = 'pending_review';
+  saveUsers();
+
+  const identity = accountIdentityHtml(ctx.from);
+  const displayName = escapeTelegram(account.displayName || accountName(ctx.from));
+  const caption = [
+    '🧾 <b>Telebirr Pro payment — receipt received</b>',
+    `Account: ${identity}`,
+    `Display name: ${displayName}`,
+    `Telegram ID: <code>${id}</code>`,
+    `Amount: <b>${TELEBIRR_ETB} ETB</b>`,
+    `Reference: <code>${escapeTelegram(request.reference)}</code>`,
+    'Status: <b>READY FOR REVIEW</b>'
+  ].join('\n');
+
+  try {
+    await ctx.telegram.sendPhoto(ADMIN_TELEGRAM_ID, best.file_id, {
+      caption,
+      parse_mode:'HTML',
+      reply_markup:{inline_keyboard:[[
+        {text:'✅ Approve',callback_data:`tb_approve_${id}`},
+        {text:'❌ Reject',callback_data:`tb_reject_${id}`}
+      ]]}
+    });
+  } catch (err) {
+    console.error('Telebirr screenshot admin notification failed:', err);
+    return ctx.reply(`Your screenshot was received, but admin notification failed. Please contact ${escapeTelegram(SUPPORT_USERNAME)} and mention reference ${escapeTelegram(request.reference)}.`, {parse_mode:'HTML'});
+  }
+
+  await ctx.reply('✅ <b>Receipt received.</b>\n\nYour Telebirr payment is now waiting for manual verification. We will notify you here after approval.', {parse_mode:'HTML'});
 });
 
 bot.on('pre_checkout_query', async (ctx) => {
   const q = ctx.preCheckoutQuery;
   const expectedPayload = `ayahquiz_pro_${q.from.id}`;
-
   if (q.currency !== 'XTR' || Number(q.total_amount) !== PRO_STARS || q.invoice_payload !== expectedPayload) {
     return ctx.answerPreCheckoutQuery(false, 'This Pro invoice is invalid or expired.');
   }
-
-  try {
-    await ctx.answerPreCheckoutQuery(true);
-  } catch (err) {
-    console.error('pre_checkout:', err);
-  }
+  try { await ctx.answerPreCheckoutQuery(true); }
+  catch (err) { console.error('pre_checkout:', err); }
 });
 
 bot.on('message', async (ctx) => {
@@ -305,7 +463,6 @@ bot.on('message', async (ctx) => {
     lastName:ctx.from.last_name || '',
     username:ctx.from.username || ''
   });
-
   account.isPro = true;
   account.starsPayment = {
     chargeId:payment.telegram_payment_charge_id,
@@ -315,72 +472,48 @@ bot.on('message', async (ctx) => {
   };
   saveUsers();
 
-  // Notify the admin about every successful Stars subscriber. If the user
-  // has no public @username, send a clickable Telegram account instead.
   try {
-    const payerName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || 'Telegram user';
-    const payerIdentity = ctx.from.username
-      ? `Username: <b>@${escapeTelegram(ctx.from.username)}</b>`
-      : `Account: <a href="tg://user?id=${ctx.from.id}">${escapeTelegram(payerName)}</a>\nUsername: <i>not set</i>`;
-    await ctx.telegram.sendMessage(
-      ADMIN_TELEGRAM_ID,
-      [
-        '⭐ <b>New Ayah Quiz Pro — Telegram Stars</b>',
-        payerIdentity,
-        `Telegram ID: <code>${ctx.from.id}</code>`,
-        `Amount: <b>${PRO_STARS} Stars</b>`,
-        `Charge ID: <code>${escapeTelegram(payment.telegram_payment_charge_id || '')}</code>`
-      ].join('\n'),
-      {parse_mode:'HTML'}
-    );
-  } catch (err) {
-    console.error('Stars admin notification failed:', err);
-  }
+    const payerIdentity = accountIdentityHtml(ctx.from);
+    await ctx.telegram.sendMessage(ADMIN_TELEGRAM_ID, [
+      '⭐ <b>New Ayah Quiz Pro — Telegram Stars</b>',
+      `Account: ${payerIdentity}`,
+      `Telegram ID: <code>${ctx.from.id}</code>`,
+      `Amount: <b>${PRO_STARS} Stars</b>`,
+      `Charge ID: <code>${escapeTelegram(payment.telegram_payment_charge_id || '')}</code>`
+    ].join('\n'), {parse_mode:'HTML'});
+  } catch (err) { console.error('Stars admin notification failed:', err); }
 
-  await ctx.reply(
-    '🎉 <b>Ayah Quiz Pro activated!</b>\\n\\nYour Pro features are now unlocked. Open the Mini App again to refresh your account.',
-    {parse_mode:'HTML'}
-  );
+  await ctx.reply('🎉 <b>Ayah Quiz Pro activated!</b>\n\nYour Pro features are now unlocked. Open the Mini App again to refresh your account.', {parse_mode:'HTML',reply_markup:{inline_keyboard:[[{text:'✦ Open Pro Ayah Quiz',web_app:{url:FRONTEND_URL}}]]}});
 });
 
-bot.action(/^tb_approve_(\\d+)$/, async (ctx) => {
-  if (String(ctx.from.id) !== ADMIN_TELEGRAM_ID) {
-    return ctx.answerCbQuery('Not authorized.', {show_alert:true});
-  }
-
+bot.action(/^tb_approve_(\d+)$/, async ctx => {
+  if (String(ctx.from.id) !== ADMIN_TELEGRAM_ID) return ctx.answerCbQuery('Not authorized.', {show_alert:true});
   const id = ctx.match[1];
   const account = users[id];
   if (!account) return ctx.answerCbQuery('User not found.', {show_alert:true});
+  if (!account.telebirrRequest || !['pending_review','pending_screenshot'].includes(account.telebirrRequest.status)) return ctx.answerCbQuery('This request is no longer pending.', {show_alert:true});
 
   account.isPro = true;
-  if (account.telebirrRequest) account.telebirrRequest.status = 'approved';
+  account.telebirrRequest.status = 'approved';
   account.telebirrApprovedAt = new Date().toISOString();
   saveUsers();
 
-  try {
-    await ctx.telegram.sendMessage(id, '🎉 Your Ayah Quiz Pro payment has been approved. Reopen the Mini App to unlock Pro.');
-  } catch (_) {}
-
+  try { await ctx.telegram.sendMessage(id, '🎉 <b>Your Ayah Quiz Pro payment has been approved!</b>\n\nYour Pro features are now unlocked. Reopen Ayah Quiz to start your advanced revision journey. 🤍', {parse_mode:'HTML',reply_markup:{inline_keyboard:[[{text:'✦ Open Ayah Quiz',web_app:{url:FRONTEND_URL}}]]}}); } catch (_) {}
   await ctx.answerCbQuery('Pro approved.');
   try { await ctx.editMessageReplyMarkup({inline_keyboard:[]}); } catch (_) {}
 });
 
-bot.action(/^tb_reject_(\\d+)$/, async (ctx) => {
-  if (String(ctx.from.id) !== ADMIN_TELEGRAM_ID) {
-    return ctx.answerCbQuery('Not authorized.', {show_alert:true});
-  }
-
+bot.action(/^tb_reject_(\d+)$/, async ctx => {
+  if (String(ctx.from.id) !== ADMIN_TELEGRAM_ID) return ctx.answerCbQuery('Not authorized.', {show_alert:true});
   const id = ctx.match[1];
   const account = users[id];
   if (!account) return ctx.answerCbQuery('User not found.', {show_alert:true});
+  if (!account.telebirrRequest || !['pending_review','pending_screenshot'].includes(account.telebirrRequest.status)) return ctx.answerCbQuery('This request is no longer pending.', {show_alert:true});
 
-  if (account.telebirrRequest) account.telebirrRequest.status = 'rejected';
+  account.telebirrRequest.status = 'rejected';
+  account.telebirrRejectedAt = new Date().toISOString();
   saveUsers();
-
-  try {
-    await ctx.telegram.sendMessage(id, `Your Telebirr Pro request was not approved. Please contact ${SUPPORT_USERNAME} with your receipt.`);
-  } catch (_) {}
-
+  try { await ctx.telegram.sendMessage(id, `❌ <b>Telebirr Pro request not approved.</b>\n\nPlease contact ${escapeTelegram(SUPPORT_USERNAME)} with your receipt if you believe this was a mistake.`, {parse_mode:'HTML'}); } catch (_) {}
   await ctx.answerCbQuery('Request rejected.');
   try { await ctx.editMessageReplyMarkup({inline_keyboard:[]}); } catch (_) {}
 });
@@ -394,7 +527,7 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`Ayah Quiz API listening on ${PORT}`);
-  bot.launch().then(() => console.log('Telegram bot launched')).catch(err => console.error('Bot launch failed:', err));
+  bot.launch().then(async () => { await setBotMenu(); console.log('Telegram bot launched'); }).catch(err => console.error('Bot launch failed:', err));
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
